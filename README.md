@@ -1,266 +1,401 @@
 # DNA Methylation of Cell Adhesion Genes is Associated with Habituation of the Song Response in Zebra Finches
-# RRBS-Workflow
-### Mapping RRBS Reads to the Reference Genome using BSMAP
-bsmap -a $input_fastq -d $ref_genome_fasta -o $output_bam -D C-CGG -D T-CGA -w 100 -v 0.08 -r 0 -p 4 -n 0 -s 12 -S 0 -f 5 -q 0 -u -V 2. 
+## Supplementary Code Repository — RRBS Analysis Workflow
 
-#### Reference genome: GCF_003957565.2_bTaeGut1.4.pri_genomic.fna (Available at: https://www.ncbi.nlm.nih.gov/assembly/GCF_003957565.2/) 
+This repository contains the full bioinformatics workflow used in the manuscript, including read alignment, CpG methylation extraction, differential methylation analysis, and genomic annotation. All steps are described in sequential order.
 
-### Minimap2 
+**Reference Genome:** `GCF_003957565.2_bTaeGut1.4.pri_genomic.fna`  
+Available at: https://www.ncbi.nlm.nih.gov/assembly/GCF_003957565.2/
 
-#### This is used to map cDNA sequences from Dong et al., 2009 to the zebrafinch transcriptome GCF_003957565.2_bTaeGut1.4.pri_rna.fna (Available at: https://www.ncbi.nlm.nih.gov/assembly/GCF_003957565.2/)
+---
 
-minimap2 -I 13G ~/GCF_003957565.2_bTaeGut1.4.pri_rna.fna ~/sb_array_seq.FASTA > minimap2_RNA_output_clone_transcript_Jan_2023
+## Table of Contents
 
-#Got: clone ID and transcript Id. Then we used the following R script to get all the gene names:
+1. [BSMAP: RRBS Read Alignment](#1-bsmap-rrbs-read-alignment)
+2. [Minimap2: cDNA-to-Transcriptome Mapping](#2-minimap2-cdna-to-transcriptome-mapping)
+3. [Gene Interval Definition (R)](#3-gene-interval-definition-r)
+4. [samtools: Extracting Target Alignments](#4-samtools-extracting-target-alignments)
+5. [BSMAPz: CpG Methylation Extraction](#5-bsmapz-cpg-methylation-extraction)
+6. [methylKit: Differential Methylation Analysis](#6-methylkit-differential-methylation-analysis)
+7. [genomation: Annotation](#7-genomation-annotation)
+8. [Session Info](#8-session-info)
 
-minimap_output <- read.csv(file='minimap2_RNA_output_clone_transcript_Jan_2023.csv',sep = "\t")
-head(minimap_output)
-colnames(minimap_output) <- c("Clone_ID","Transcript_ID")
+---
 
+## 1. BSMAP: RRBS Read Alignment
 
-### We extracted gene names and transcript names from the GCF_003957565.2_bTaeGut1.4.pri_rna.fna file using awk in bash
+Map RRBS reads to the zebra finch reference genome using [BSMAP](https://github.com/genome-vendor/bsmap).
 
-transcript_gene <- read.csv(file="transcript_gene_names_zebra_finch.csv",sep = "\t")
-head(transcript_gene)
-colnames(transcript_gene) <- c('Transcript_ID','gene')
+**Input:**
+- `<sample>.fastq` — Raw RRBS reads
+- `GCF_003957565.2_bTaeGut1.4.pri_genomic.fna` — Reference genome
 
-clone_transcript_gene <- inner_join(transcript_gene,minimap_output,by="Transcript_ID")
+**Command:**
+
+```bash
+bsmap \
+  -a <input_fastq> \
+  -d GCF_003957565.2_bTaeGut1.4.pri_genomic.fna \
+  -o <output_bam> \
+  -D C-CGG \
+  -D T-CGA \
+  -w 100 \
+  -v 0.08 \
+  -r 0 \
+  -p 4 \
+  -n 0 \
+  -s 12 \
+  -S 0 \
+  -f 5 \
+  -q 0 \
+  -u \
+  -V 2
+```
+
+**Parameter Notes:**
+| Flag | Value | Description |
+|------|-------|-------------|
+| `-D` | `C-CGG`, `T-CGA` | Restriction enzyme cut sites (RRBS mode) |
+| `-w` | `100` | Maximum number of equal best hits |
+| `-v` | `0.08` | Maximum mismatch rate |
+| `-r` | `0` | Report all best hits |
+| `-p` | `4` | Number of threads |
+| `-s` | `12` | Seed size |
+| `-f` | `5` | Filter reads with >5 Ns |
+| `-u` | — | Report unmapped reads |
+
+---
+
+## 2. Minimap2: cDNA-to-Transcriptome Mapping
+
+Map cDNA clone sequences from Dong et al. (2009) to the zebra finch transcriptome to obtain clone ID–to–transcript ID mappings.
+
+**Reference Transcriptome:** `GCF_003957565.2_bTaeGut1.4.pri_rna.fna`  
+Available at: https://www.ncbi.nlm.nih.gov/assembly/GCF_003957565.2/
+
+### 2.1 Alignment
+
+```bash
+minimap2 -I 13G \
+  GCF_003957565.2_bTaeGut1.4.pri_rna.fna \
+  sb_array_seq.FASTA \
+  > minimap2_RNA_output_clone_transcript.paf
+```
+
+### 2.2 Post-Processing in R
+
+Parse minimap2 output and join with gene name annotations extracted from the reference FASTA.
+
+```r
+library(dplyr)
+
+# Load minimap2 output
+minimap_output <- read.csv(
+  file = "minimap2_RNA_output_clone_transcript.csv",
+  sep  = "\t"
+)
+colnames(minimap_output) <- c("Clone_ID", "Transcript_ID")
+
+# Load transcript-to-gene name table
+# (extracted from GCF_003957565.2_bTaeGut1.4.pri_rna.fna headers using awk)
+transcript_gene <- read.csv(
+  file = "transcript_gene_names_zebra_finch.csv",
+  sep  = "\t"
+)
+colnames(transcript_gene) <- c("Transcript_ID", "gene")
+
+# Join to get Clone_ID -> Transcript_ID -> Gene mapping
+clone_transcript_gene <- inner_join(transcript_gene, minimap_output, by = "Transcript_ID")
 head(clone_transcript_gene)
-
-
-## Next we have to find the updated list of habituated vs novel significant genes
-
-```{r}
-hab_vs_nov_sig_genes <- read.csv(file="AASA_Manuscript_plot.csv") 
-hab_vs_nov_sig_genes_final <- hab_vs_nov_sig_genes %>% dplyr::select("gene","clone_id","AASA_fold_clone","AASA_fdr_clone","log2FoldChange","fdr")  %>% filter(AASA_fdr_clone < 0.05) 
 ```
 
-```{r}
-library("rtracklayer")
-library("tidyverse")
-readGFF("GCF_003957565.2_bTaeGut1.4.pri_genomic.gff")%>%head()
-#I changed this code to select "gene" instead of "mRNA", "lncRNA", "transcript" Now there should be only one line for each gene (instead of the multiple transcripts)
-```
-```{r}
-my_tags <- c("Name", "Dbxref","gene")
+---
+
+## 3. Gene Interval Definition (R)
+
+Define gene body intervals extended 2 kb upstream to capture potential regulatory regions. Filter to significant differentially expressed genes (Habituated vs. Novel; AASA analysis).
+
+```r
+library(rtracklayer)
+library(tidyverse)
+
+# --- 3.1 Load significant DE genes ---
+hab_vs_nov_sig_genes <- read.csv("AASA_Manuscript_plot.csv")
+
+hab_vs_nov_sig_genes_final <- hab_vs_nov_sig_genes %>%
+  dplyr::select(gene, clone_id, AASA_fold_clone, AASA_fdr_clone, log2FoldChange, fdr) %>%
+  filter(AASA_fdr_clone < 0.05)
+
+# --- 3.2 Parse gene coordinates from GFF ---
+# Select only "gene"-type features (one row per gene, not per transcript)
+my_tags    <- c("Name", "Dbxref", "gene")
 my_columns <- c("seqid", "start", "end", "strand", "type")
-my_filter<-list(type="gene")
-dat<-readGFF("GCF_003957565.2_bTaeGut1.4.pri_genomic.gff",tags=my_tags,columns=my_columns,filter=my_filter)
-head(dat)
-#I made a new column for interval_start and interval_stop, so I could increase the upstream interval to capture potential regulatory sites
-```
-```{r}
-dat$interval_start<-dat$start
-dat$interval_stop<-dat$end
-dat
-#Add 2kb upstream of the start site gene intervals always have start and stop listed smallest to largest (like in a bed file) for genes on the positive strand, start = start-2000 for genes on the negative strand, stop = stop + 2000
-```
+my_filter  <- list(type = "gene")
 
+dat <- readGFF(
+  "GCF_003957565.2_bTaeGut1.4.pri_genomic.gff",
+  tags    = my_tags,
+  columns = my_columns,
+  filter  = my_filter
+)
 
-```{r}
-#AASA
-#write to file
-as.data.frame(dat)%>%mutate(interval_start=ifelse(strand=="+",start-2000,start))%>%  #if positive strand, subtract 2000 from the start
-  mutate(interval_start=ifelse(interval_start<1, 1,interval_start))%>%  #if start is within 2kb of start of chr, start interval at 1
-  mutate(interval_stop=ifelse(strand=="-",end+2000,end))%>%
-  saveRDS("PS_bTaeGut_v2p_gene_intervals_plus_10K_v2.RDS")
-test <- readRDS("PS_bTaeGut_v2p_gene_intervals_plus_10K_v2.RDS") #This reads the RDS file into a data frame test
-unique_genes_AASA <- hab_vs_nov_sig_genes_final #This reads the txt file in a data frame unique_genes
+# --- 3.3 Extend intervals 2 kb upstream of transcription start site ---
+# For genes on the (+) strand: interval_start = start - 2000
+# For genes on the (-) strand: interval_stop  = end   + 2000
+dat_intervals <- as.data.frame(dat) %>%
+  mutate(
+    interval_start = ifelse(strand == "+", start - 2000, start),
+    interval_start = ifelse(interval_start < 1, 1, interval_start),  # clamp to chromosome start
+    interval_stop  = ifelse(strand == "-", end + 2000, end)
+  )
 
-TEST_2 <- dplyr::semi_join(test, unique_genes_AASA, by="gene") #This step matches filters the RDS for only the unique or significant genes in unique_genes
-saveRDS(TEST_2, file="August_2022_sig_Habituated_vs_novel_Rtracklayer.RDS") #saves the RDS file
-write.table(TEST_2,file="August_2022_sig_Habituated_vs_novel_Rtracklayer.txt",sep = "\t",
-            row.names = FALSE) #this txt file can be used as a BED file in the following steps
-```
+saveRDS(dat_intervals, "bTaeGut_v2p_gene_intervals_plus_2kb.RDS")
 
-#### Extract interval_start and interval_stop for the next steps
-### Extracting alignments from BSMAP output files using samtools view
+# --- 3.4 Filter intervals to significant DE genes only ---
+sig_gene_intervals <- dplyr::semi_join(dat_intervals, hab_vs_nov_sig_genes_final, by = "gene")
 
-samtools view -b -L August_2022_sig_Habituated_vs_novel_Rtracklayer.bed ~/$_output.bam > $_interval.bam
+saveRDS(sig_gene_intervals, "sig_Habituated_vs_Novel_gene_intervals.RDS")
 
-### Extracting Methylated CpG sites using BSMAPz
-python ~/methratio.py -o $_methratio.txt -d ~/GCF_003957565.2_bTaeGut1.4.pri_genomic.fna -z -x CG ~/$_interval.bam
-
-## Methylkit for differential methylation analysis, read coverage filtration, and annotation
-#### FA = Habituated, SI = Silence
-
-
-```{r}
-setwd("/Users/subbaprakrit/Library/CloudStorage/Box-Box/Prakrit Subba research/RRBS_July/Reanalysis_Jan_2023/Methylkit_feb_8")
+write.table(
+  sig_gene_intervals,
+  file      = "sig_Habituated_vs_Novel_gene_intervals.txt",
+  sep       = "\t",
+  row.names = FALSE
+)
+# Note: The output .txt file (interval_start, interval_stop columns) is used
+# as a BED file in steps 4 and 5.
 ```
 
-```{r}
-#Install packages
+---
+
+## 4. samtools: Extracting Target Alignments
+
+Subset BSMAP BAM files to reads overlapping the significant gene intervals defined above.
+
+```bash
+samtools view -b \
+  -L sig_Habituated_vs_Novel_gene_intervals.bed \
+  <sample>_output.bam \
+  > <sample>_interval.bam
+```
+
+---
+
+## 5. BSMAPz: CpG Methylation Extraction
+
+Extract per-CpG methylation ratios from the interval-subset BAM files using [BSMAPz](https://github.com/dohlee/bsmapz).
+
+```bash
+python methratio.py \
+  -o <sample>_methratio.txt \
+  -d GCF_003957565.2_bTaeGut1.4.pri_genomic.fna \
+  -z \
+  -x CG \
+  <sample>_interval.bam
+```
+
+---
+
+## 6. methylKit: Differential Methylation Analysis
+
+Differential methylation analysis comparing **Habituated (FA)** vs. **Silence (SI)** conditions using [methylKit](https://bioconductor.org/packages/release/bioc/html/methylKit.html).
+
+### 6.1 Installation
+
+```r
 if (!requireNamespace("BiocManager", quietly = TRUE))
   install.packages("BiocManager")
 
 BiocManager::install("methylKit")
-library("methylKit")
-file.list = list("G1FA160_feb_2023_methratio.txt", "G1FA211_feb_2023_methratio.txt", "G1FA237_feb_2023_methratio.txt","G2FA149_feb_2023_methratio.txt","G2FA209_feb_2023_methratio.txt","G2FA222_feb_2023_methratio.txt","G1SI152_feb_2023_methratio.txt","G1SI199_feb_2023_methratio.txt","G1SI246_feb_2023_methratio.txt","G2SI146_feb_2023_methratio.txt","G2SI188_feb_2023_methratio.txt","G2SI218_feb_2023_methratio.txt")
-myobj=methRead( file.list,pipeline=list(fraction=TRUE,chr.col=1,start.col=2,end.col=2, coverage.col=6,strand.col=3,freqC.col=5 ),
-                sample.id=list("G1FA160", "G1FA211", "G1FA237", "G2FA149", "G2FA209", "G2FA222", "G1SI152", "G1SI199", "G1SI246", "G2SI146", "G2SI188", "G2SI218"),assembly="taeGut1",treatment=c(1,1,1,1,1,1,0,0,0,0,0,0))
+library(methylKit)
 ```
-#get methylation statistics
-```{r}
+
+### 6.2 Load Methylation Data
+
+```r
+# Input files: per-sample methratio output from BSMAPz (Step 5)
+# Conditions: FA = Habituated (treatment = 1), SI = Silence (treatment = 0)
+
+file.list <- list(
+  "G1FA160_methratio.txt", "G1FA211_methratio.txt", "G1FA237_methratio.txt",
+  "G2FA149_methratio.txt", "G2FA209_methratio.txt", "G2FA222_methratio.txt",
+  "G1SI152_methratio.txt", "G1SI199_methratio.txt", "G1SI246_methratio.txt",
+  "G2SI146_methratio.txt", "G2SI188_methratio.txt", "G2SI218_methratio.txt"
+)
+
+myobj <- methRead(
+  file.list,
+  pipeline = list(
+    fraction    = TRUE,
+    chr.col     = 1,
+    start.col   = 2,
+    end.col     = 2,
+    coverage.col = 6,
+    strand.col  = 3,
+    freqC.col   = 5
+  ),
+  sample.id = list(
+    "G1FA160", "G1FA211", "G1FA237",
+    "G2FA149", "G2FA209", "G2FA222",
+    "G1SI152", "G1SI199", "G1SI246",
+    "G2SI146", "G2SI188", "G2SI218"
+  ),
+  assembly  = "taeGut1",
+  treatment = c(1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0)
+)
+```
+
+### 6.3 Quality Control
+
+```r
+# Methylation statistics per sample
 for (i in 1:12) {
-  getMethylationStats(myobj[[i]],plot=TRUE,both.strands=FALSE)
+  getMethylationStats(myobj[[i]], plot = TRUE, both.strands = FALSE)
 }
 ```
 
-```{r}
-#filter by coverage and get coverage stats
+### 6.4 Coverage Filtering
 
-filtered.myobj=filterByCoverage(myobj,lo.count=10,lo.perc=NULL,
-                                hi.count=NULL,hi.perc=NULL)
+```r
+# Retain CpGs with a minimum read depth of 10
+filtered.myobj <- filterByCoverage(
+  myobj,
+  lo.count = 10,
+  lo.perc  = NULL,
+  hi.count = NULL,
+  hi.perc  = NULL
+)
 
-for (i in 1:12){
-  getCoverageStats(filtered.myobj[[i]],plot=TRUE,both.strands=FALSE)
-}
-
+# QC plots post-filtering
 for (i in 1:12) {
-  getMethylationStats(filtered.myobj[[i]],plot=TRUE,both.strands=FALSE)
+  getCoverageStats(filtered.myobj[[i]], plot = TRUE, both.strands = FALSE)
+  getMethylationStats(filtered.myobj[[i]], plot = TRUE, both.strands = FALSE)
 }
 ```
 
-```{r}
-meth=unite(filtered.myobj, destrand=FALSE)
-meth
-meth_destrand=unite(filtered.myobj, destrand=TRUE) 
-##see that destrand=TRUE increases coverage
-meth_destrand 
+### 6.5 Unite Samples
 
-```
-```{r}
-#meth_unfiltered=unite(myobj, destrand=FALSE)
-#meth_unfiltered
-#meth_unfiltered_destrand=unite(myobj, destrand=TRUE) 
-##see that destrand=TRUE increases coverage
-#meth_unfiltered_destrand 
+```r
+# Unite CpG sites across all samples (strand-specific)
+meth <- unite(filtered.myobj, destrand = FALSE)
 
-#myDiff_unfiltered_d=calculateDiffMeth(meth_unfiltered_destrand)
-#getData(myDiff_unfiltered_d) %>% dplyr::arrange(qvalue)
+# Unite with destranding (merges CpGs on opposite strands; increases coverage)
+meth_destrand <- unite(filtered.myobj, destrand = TRUE)
 ```
 
-```{r}
-#see how samples cluster
+### 6.6 Sample Clustering and PCA
 
-clusterSamples(meth, dist="correlation", method="ward", plot=TRUE,sd.threshold = .90)
-clusterSamples(meth_destrand, dist="correlation", method="ward", plot=TRUE,sd.threshold = .90)
-```
-```{r}
-#plot Principal Components
+```r
+# Hierarchical clustering
+clusterSamples(meth,          dist = "correlation", method = "ward", plot = TRUE, sd.threshold = 0.90)
+clusterSamples(meth_destrand, dist = "correlation", method = "ward", plot = TRUE, sd.threshold = 0.90)
 
-PCASamples(meth,adj.lim = c(.4, 1), sd.threshold = .90) #not sure about how to set this value?
-PCASamples(meth_destrand,adj.lim = c(0,1), sd.threshold = 0.5) #not sure about how to set this value?
-
-
-
-
-```
-```{r}
-#get a methylDiff object containing the differential methylation statistics and locations for regions or bases
-myDiff=calculateDiffMeth(meth)
-#write.csv(getData(myDiff),"summary.csv")
-getData(myDiff)
-myDiff_d=calculateDiffMeth(meth_destrand)
-getData(myDiff_d) %>% dplyr::arrange(qvalue)%>% write.csv(file="Feb_8_2023_new_workflow_meth_diff.csv")
+# PCA
+PCASamples(meth,          adj.lim = c(0.4, 1), sd.threshold = 0.90)
+PCASamples(meth_destrand, adj.lim = c(0.0, 1), sd.threshold = 0.50)
 ```
 
-```{r}
-# get all differentially methylated bases, difference greater than 25
-myDiff10p=getMethylDiff(myDiff,qvalue=.01)
-getData(myDiff10p)
+### 6.7 Differential Methylation
 
+```r
+# Calculate differential methylation (strand-specific and destranded)
+myDiff   <- calculateDiffMeth(meth)
+myDiff_d <- calculateDiffMeth(meth_destrand)
 
-myDiff10p_destranded=getMethylDiff(myDiff_d,qvalue=.01,difference=25)
-diff_25_august <- getData(myDiff10p_destranded) %>% dplyr::arrange(qvalue)
-write.csv(diff_25_august,"Feb_8_2023_new_workflow_meth_diff25_unannotated.csv")
+# Export full destranded results
+getData(myDiff_d) %>%
+  dplyr::arrange(qvalue) %>%
+  write.csv(file = "differential_methylation_all_CpGs.csv")
 
+# Filter: q-value < 0.01, methylation difference > 25%
+myDiff10p_destranded <- getMethylDiff(myDiff_d, qvalue = 0.01, difference = 25)
+
+getData(myDiff10p_destranded) %>%
+  dplyr::arrange(qvalue) %>%
+  write.csv("differential_methylation_sig_CpGs_unannotated.csv")
 ```
-#Annotation Plots
-```{r}
+
+---
+
+## 7. genomation: Annotation
+
+Annotate differentially methylated CpGs with promoter, exon, and intron features using [genomation](https://bioconductor.org/packages/release/bioc/html/genomation.html).
+
+```r
 library(genomation)
-```
 
-```{r}
-# read the gene BED file
-bed=readTableFast("1_test_genePred.bed.txt",header=FALSE,skip="auto")
-head(bed)
-gene.obj=readTranscriptFeatures("1_test_genePred.bed.txt",up.flank=2000,down.flank=0,remove.unusual=FALSE) #I think up.flank adds promoter boundaries to 2000 bp
-```
+# --- 7.1 Load gene model BED file ---
+# BED file derived from UCSC genePred table for taeGut1
+gene.obj <- readTranscriptFeatures(
+  "genePred.bed.txt",
+  up.flank      = 2000,
+  down.flank    = 0,
+  remove.unusual = FALSE
+)
 
-```{r}
-#
-# annotate differentially methylated CpGs with 
-# promoter/exon/intron using annotation data
-#
-annotateWithGeneParts(as(myDiff10p_destranded,"GRanges"),gene.obj,intersect.chr=T)
-annotateWithFeatures(as(myDiff10p_destranded,"GRanges"),gene.obj,intersect.chr = T)
-```
+# --- 7.2 Annotate significant DMCs ---
+diffAnn          <- annotateWithGeneParts(as(myDiff10p_destranded, "GRanges"), gene.obj)
+diffAnn_features <- annotateWithFeatures(as(myDiff10p_destranded, "GRanges"), gene.obj, intersect.chr = TRUE)
 
-```{r}
-promoters=regionCounts(filtered.myobj,gene.obj$promoters)
+plotTargetAnnotation(
+  diffAnn_features,
+  precedence = TRUE,
+  main       = "Habituated vs. Silence — Significant DMC Annotation"
+)
+plotTargetAnnotation(diffAnn, precedence = TRUE)
 
-head(promoters[[1]])
-
-```
-
-```{r}
-diffAnn=annotateWithGeneParts(as(myDiff10p_destranded,"GRanges"),gene.obj)
-diffAnn_features=annotateWithFeatures(as(myDiff10p_destranded,"GRanges"),gene.obj,intersect.chr = T)
-plotTargetAnnotation(diffAnn_features,precedence=T,
-    main="Familiar vs Silence Differential Methylation Annotation")
-plotTargetAnnotation(diffAnn,precedence=T)
-# target.row is the row number in myDiff10p_destranded
 head(getAssociationWithTSS(diffAnn))
-```
-```{r}
-getTargetAnnotationStats(diffAnn,percentage=TRUE,precedence=TRUE)
-```
-```{r}
-plotTargetAnnotation(diffAnn,precedence=TRUE,
-    main="Familiar vs Silence Differential Methylation Annotation")
-```
+getTargetAnnotationStats(diffAnn, percentage = TRUE, precedence = TRUE)
 
-``
+# --- 7.3 Annotate all CpGs (background) ---
+diffAnn_ALL          <- annotateWithGeneParts(as(myDiff_d, "GRanges"), gene.obj, intersect.chr = TRUE)
+diffAnn_features_ALL <- annotateWithFeatures(as(myDiff_d, "GRanges"), gene.obj, intersect.chr = TRUE)
 
-```{r}
-# CALCULATING FOR ALL CpGs
-# annotate differentially methylated CpGs with 
-# promoter/exon/intron using annotation data
-#
-annotateWithGeneParts(as(myDiff_d,"GRanges"),gene.obj,intersect.chr = T)
-annotateWithFeatures(as(myDiff_d,"GRanges"),gene.obj,intersect.chr = T)
-```
+plotTargetAnnotation(
+  diffAnn_features_ALL,
+  precedence = TRUE,
+  main       = "Habituated vs. Silence — All CpG Annotation"
+)
 
-```{r}
-promoters_ALL=regionCounts(filtered.myobj,gene.obj$promoters)
-
-head(promoters_ALL[[1]])
-
-```
-
-```{r}
-diffAnn_ALL=annotateWithGeneParts(as(myDiff_d,"GRanges"),gene.obj,intersect.chr = T)
-plotTargetAnnotation(diffAnn_ALL,precedence=T)
-
-diffAnn_features_ALL=annotateWithFeatures(as(myDiff_d,"GRanges"),gene.obj,intersect.chr = T)
-plotTargetAnnotation(diffAnn_features_ALL,precedence=T,
-    main="Familiar vs Silence Differential Methylation Annotation in all CpGs")
-# target.row is the row number in myDiff_d
 head(getAssociationWithTSS(diffAnn_ALL))
-```
-```{r}
-getTargetAnnotationStats(diffAnn_ALL,percentage=TRUE,precedence=TRUE)
-```
-```{r}
-plotTargetAnnotation(diffAnn_ALL,precedence=TRUE,
-    main="Familiar vs Silence Differential Methylation Annotation in all CpGs")
+getTargetAnnotationStats(diffAnn_ALL, percentage = TRUE, precedence = TRUE)
+
+# --- 7.4 Promoter region counts ---
+promoters <- regionCounts(filtered.myobj, gene.obj$promoters)
+head(promoters[])[1]
 ```
 
+---
 
-```{r}
+## 8. Session Info
+
+```r
 sessionInfo()
 ```
 
+---
 
+## Dependencies
+
+| Tool | Version Used | Source |
+|------|-------------|--------|
+| BSMAP | 2.9 | https://github.com/genome-vendor/bsmap |
+| minimap2 | — | https://github.com/lh3/minimap2 |
+| BSMAPz (methratio.py) | — | https://github.com/dohlee/bsmapz |
+| samtools | — | http://www.htslib.org/ |
+| R / methylKit | Bioconductor | https://bioconductor.org/packages/methylKit |
+| R / genomation | Bioconductor | https://bioconductor.org/packages/genomation |
+| R / rtracklayer | Bioconductor | https://bioconductor.org/packages/rtracklayer |
+| R / tidyverse | CRAN | https://www.tidyverse.org/ |
+
+---
+
+## Data Availability
+
+Raw sequencing data and processed methylation ratio files are deposited at [repository link]. The zebra finch reference genome assembly `GCF_003957565.2` (bTaeGut1.4.pri) is available through NCBI at https://www.ncbi.nlm.nih.gov/assembly/GCF_003957565.2/.
+
+---
+
+## Citation
+
+If you use this workflow, please cite:  
+> [Author list]. DNA Methylation of Cell Adhesion Genes is Associated with Habituation of the Song Response in Zebra Finches. *[Journal]*, [Year]. DOI: [DOI]
